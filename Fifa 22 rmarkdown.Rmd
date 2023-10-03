@@ -1,0 +1,471 @@
+---
+title: "FIFA 22 Analysis"        
+author: "Md Shamsul Hoque Khan"
+date: "2023-10-01"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+# Introduction
+
+This analysis is intended to explore various aspects of FIFA 22 game data, focusing on player attributes, their positions, and other relevant details that define their in-game performance. By utilizing R, we aim to derive insights and make conclusions about player characteristics, abilities, and their representation within the game.
+
+# Data Preparation and Exploration
+
+Necessary packages and dateset for this work:
+```{r}
+library(tidyverse)
+library(readr)
+library(writexl)
+library(ggplot2)
+library(randomForest)
+
+
+file_path <- "FIFA22_official_data.csv"
+player_df <- read.csv(file_path)
+
+```
+
+Now we will find out what are the columns we need for only player stats analysis.
+```{r}
+colnames(player_df)
+
+unique(player_df$Position)
+
+class(player_df$Position)
+```
+
+It seems the Position column has weird values instead of player positions.
+The player positions seem to be at the end of the character values. We will 
+only keep the player position and delete rest of the character.
+
+```{r}
+player_df[, "Position"] <- str_replace_all(player_df$Position, ".*>", "")
+
+unique(player_df$Position)
+
+unique(player_df$Best.Position)
+```
+
+I just realized that Position column also include Sub (SUB) and reserve (RES) 
+as position definitions. In such as, I think it's better to use the best position
+to define position for a particular player. We can remove Postion column. Also,
+weight and Body.Type doesn't add any value to a players overall ranking in FIFA.
+
+```{r}
+unnecessary_column <- c("Photo", "Flag", "Potential", "Club.Logo",
+                        "Special", "International.Reputation",
+                        "Weak.Foot", "Body.Type", "Real.Face", "Jersey.Number",
+                        "Joined", "Loaned.From", "Contract.Valid.Until", 
+                        "Weight", "Best.Overall.Rating", "Release.Clause", "Position")
+
+player_stats <- select(player_df, -unnecessary_column)
+
+summary(player_stats)
+```
+
+
+It seems there are lots of NA values. I don't want to drop all these values 
+because there are some really good players, such as Bruno Fernandes and 
+L. Goretzka, who have missing values. They are the face of the game.
+To solve this, I want to categorize players
+based on their position and overall rating. Then I will take the median Scoring
+of a variable for that particular position within that overall rating range.
+I want to create a separate table to avoid confusion.
+
+
+```{r}
+# Create a new column that groups 'Overall' into ranges
+
+player_stats <- player_stats %>%mutate(Overall_group = case_when(
+    Overall >= 80 ~ "80-99",
+    Overall >= 70 ~ "70-79",
+    Overall >= 60 ~ "60-69",
+    TRUE ~ "<60"))
+
+
+# Compute median scores for 'Marking' and 'Volleys' columns in each group
+
+medains <- player_stats %>% group_by(Best.Position, Overall_group) %>% 
+  summarize(Marking_median = median(Marking, na.rm = TRUE),
+            Volleys_median = median(Volleys, na.rm = TRUE),
+            Curve_median = median(Curve, na.rm = TRUE),
+            Agility_median = median(Agility, na.rm = TRUE),
+            Balance_median = median(Balance, na.rm = TRUE),
+            Jumping_median = median(Jumping, na.rm = TRUE),
+            Interceptions_median = median(Interceptions, na.rm = TRUE),
+            Positioning_median = median(Positioning, na.rm = TRUE),
+            Vision_median = median(Vision, na.rm = TRUE),
+            Composure_median = median(Composure, na.rm = TRUE),
+            SlidingTackle_median = median(SlidingTackle, na.rm = TRUE),
+            DefensiveAwareness_median = median(DefensiveAwareness, na.rm = TRUE))
+
+player_stats <- left_join(player_stats, medains, by = c("Best.Position", "Overall_group"))
+
+
+# Now Replace the NaN values with the medians
+
+player_stats_fixed <- player_stats %>% 
+  mutate("Marking" = ifelse(is.na(Marking), Marking_median, Marking),
+         "Volleys" = ifelse(is.na(Volleys), Volleys_median, Volleys),
+         "Curve" = ifelse(is.na(Curve), Curve_median, Curve),
+         "Agility" = ifelse(is.na(Agility), Agility_median, Agility),
+         "Balance" = ifelse(is.na(Balance), Balance_median, Balance),
+         "Jumping" = ifelse(is.na(Jumping), Jumping_median, Jumping),
+         "Interceptions" = ifelse(is.na(Interceptions), Interceptions_median, Interceptions),
+         "Positioning" = ifelse(is.na(Positioning), Positioning_median, Positioning),
+         "Composure" = ifelse(is.na(Composure), Composure_median, Composure),
+         "SlidingTackle" = ifelse(is.na(SlidingTackle), SlidingTackle_median, SlidingTackle),
+         "DefensiveAwareness" = ifelse(is.na(DefensiveAwareness), DefensiveAwareness_median, DefensiveAwareness),
+         "Vision" = ifelse(is.na(Vision), Vision_median, Vision))
+
+
+summary(player_stats_fixed)
+
+```
+
+It seems like we still have 132 NA values in Marking. In this case, I will 
+inspect whether these players has good overall. If so, I will not drop the NAs.
+But if not, then I will drop the values because our data set has a lot of 
+observations to draw meaningful insight with these values.
+
+```{r}
+inspection_marking <- player_stats_fixed %>%
+  filter(is.na(Marking) & Overall > 75) %>%
+  select(ID, Name, Best.Position, Overall, Marking)
+```
+
+A close inspection of the inspection_marking data frame shows that we can't 
+drop the NA values becasue there are some big names, such as Neymar Jr.
+
+```{r}
+unique(inspection_marking$Best.Position)
+```
+
+Really interesting thing is that all NA value players are wingers, LM, LW, and
+RM. For this positions, Marking attribute is not important and doesn't contribute
+to their overall rating. 
+For details: https://fifaforums.easports.com/en/discussion/277545/how-player-rating-is-calculated-it-is-a-total-mess
+
+So, we can give them a random low score of 40 in Marking.
+
+```{r}
+player_stats_fixed$Marking[is.na(player_stats_fixed$Marking)] <- 40
+
+sum(is.na(player_stats_fixed$Marking))
+```
+
+Now we need to separate Goal-Keepers from the outfield players because
+Goal-Keepers have different attributes, and we are only interested in the 
+Out-field players.
+
+```{r}
+outfield_player <- player_stats_fixed %>% filter(Best.Position != "GK") %>% 
+  select(-c("GKDiving", "GKHandling", "GKKicking", "GKPositioning", "GKReflexes"))
+
+outfield_player <- outfield_player[,-((ncol(outfield_player) - 11) : ncol(outfield_player))]
+```
+
+The Work.Rate column has Attacking and Defensive work rate of a player.
+I want to have two different columns for each.
+
+```{r}
+# Replace "N/A/ N/A" with "Medium/ Medium"
+outfield_player$Work.Rate[outfield_player$Work.Rate == "N/A/ N/A"] <- "Medium/ Medium"
+
+# Separate Work.Rate into two new columns
+outfield_player <- outfield_player %>%
+  separate(Work.Rate, into = c("Attack.work.rate", "Defensive.work.rate"), sep = "/")
+```
+
+As I was exploring the data, I realized the Name column has some 
+Values that start with number, such as "12 Roberto Carlos".
+
+```{r}
+outfield_player$Name <- str_remove(outfield_player$Name, "^\\d+\\s")
+
+colnames(outfield_player)
+```
+
+Now the data is clean!!! I can have the clean dataset in excel format:
+
+```{r}
+write_xlsx(outfield_player, "outfield_player.1.xlsx")
+```
+
+# Detailed Analysis
+
+Now I will explore the data to gather different insight from it. 
+Firstly, I want to find out the best young players and their market values.
+
+```{r}
+young_players <- outfield_player %>%
+  filter(Age <= 23) %>%
+  mutate(Value = gsub("€", "", Value),  # remove Euro symbol
+         Value = gsub("M", "e6", Value),  # replace M with e6
+         Value = gsub("K", "e3", Value),  # replace K with e3
+         Value = as.numeric(gsub("e6", "",
+                                 ifelse(grepl("e6", Value), as.character(
+                                   as.numeric(gsub(
+                                     "e6", "", Value)) * 1e6), Value))),# for millions
+         Value = as.numeric(gsub(
+           "e3", "", ifelse(grepl("e3", Value), as.character(
+             as.numeric(gsub("e3", "", Value)) * 1e3), Value)))) %>% # for thousands
+  arrange(desc(Value)) %>%
+  head(10) %>%
+  mutate(label = paste0("€", scales::comma(Value)),
+         player_age = paste(Name, "(", Age, ")", sep = ""))
+
+
+
+ggplot(young_players, aes(x = reorder(player_age, -Value), y = Value)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = label), vjust = -0.2, nudge_y = max(
+    young_players$Value) * 0.1) + # Adjusting the label position here
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Top 10 Young Players and Their Market Values",
+       x = "Player (Age)",
+       y = "Market Value (€)") +
+  theme_minimal()
+```
+
+Let's see the top 10 countries with highest number of players.
+
+```{r}
+# Group by Nationality and count the number of players from each country
+top_countries <- outfield_player %>%
+  group_by(Nationality) %>%
+  summarize(Num_of_Players = n()) %>%
+  arrange(desc(Num_of_Players)) %>%
+  head(10)
+
+# Define the colors for each country
+country_colors <- c(
+  "England" = "gray",
+  "Spain" = "red",
+  "Germany" = "black",
+  "France" = "darkblue",
+  "Argentina" = "lightblue",
+  "Brazil" = "yellow",
+  "Italy" = "green",
+  "Netherlands" = "orange",
+  "Portugal" = "maroon",
+  "United States" = "gold"
+)
+
+ggplot(top_countries, aes(x = reorder(Nationality, -Num_of_Players), y = Num_of_Players)) +
+  geom_bar(stat = "identity", aes(fill = Nationality)) +
+  geom_text(aes(label = Num_of_Players, y = Num_of_Players + max(top_countries$Num_of_Players) * 0.05)) +
+  coord_flip() +
+  scale_fill_manual(values = country_colors) +  # Apply custom color mapping here
+  labs(title = "Top 10 Countries with the Highest Number of Players",
+       x = "Country",
+       y = "Number of Players") +
+  theme_minimal()
+```
+
+There is no surprise that England is leading the chart followed by Spain.
+The reason is England and Spain have more league divisions in the game than 
+any other countries.
+
+Let's find out the details about top 10 players in the game.
+
+```{r}
+# Arrange the dataframe by Overall Ratings and pick the top 10
+top_players <- outfield_player %>%
+  arrange(desc(Overall)) %>%
+  head(10)
+
+# View the result
+print(top_players[, c("Name", "Age", "Nationality", "Club", "Overall")])
+```
+
+Looks like L. Messi is leading the chart with overall rating of 93. Important
+point to observe here is that the top 4 players are over the age of 30 or 30.
+The youngest amoung the top 10 is K. Mbappé.
+
+A Fifa 22 player will most likely want to see comparison between
+L. Messi and Cristiano Ronaldo. 
+
+```{r}
+# Selecting Players
+players_comparison <- outfield_player %>% 
+  filter(Name %in% c('L. Messi', 'Cristiano Ronaldo'))
+
+# Adding Age to their Names for Legend
+players_comparison <- players_comparison %>%
+  mutate(Legend = paste(Name, "(", Age, ")", sep = ""))
+
+# Selecting relevant columns
+relevant_columns <- c("Legend", "Finishing", "HeadingAccuracy", "Volleys", "Dribbling", 
+                      "FKAccuracy", "BallControl", "Acceleration", "SprintSpeed", 
+                      "Agility", "Reactions", "Balance", "ShotPower", "Jumping", 
+                      "Stamina", "Strength", "LongShots", "Positioning", 
+                      "Vision", "Penalties", "Composure", "Curve", "LongPassing", 
+                      "ShortPassing")
+
+# Filtering to selected columns and transforming the data
+players_long <- players_comparison[ , relevant_columns] %>%
+  pivot_longer(cols = -Legend, names_to = "Attribute", values_to = "Value")
+
+# Assign colors to each Legend
+unique_legends <- unique(players_comparison$Legend)
+colors <- setNames(c('blue', 'red'), unique_legends)
+
+# Plotting
+ggplot(players_long, aes(x = Attribute, y = Value, fill = Legend)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  coord_flip() +
+  labs(title = "Comparison between L. Messi and Cristiano Ronaldo",
+       x = "Attributes",
+       y = "Values") +
+  scale_fill_manual(values = colors) +
+  theme_minimal()
+```
+
+
+I can see that the image you provided is a comparison between Lionel Messi and
+Cristiano Ronaldo. Ronaldo has a higher rating in the following attributes:
+Heading Accuracy, Strength, Stamina, Jumping, Sprint Speed, Penalties,
+Positioning, Shot Power. They are equal in Finishing and Reactions.
+Overall, Messi has a higher rating than Ronaldo in 8 out of 24 attributes. 
+However, it is important to note that these are just individual attributes. 
+It is also important to consider the players' overall playing style and their
+ability to fit into a particular team.
+
+Messi is a more creative player who is known for his vision, passing, and
+dribbling skills. Ronaldo is a more physical player who is known for his pace, 
+heading ability, and finishing ability.
+
+Lastly, let's find out the top 10 Clubs with Players having overall rating
+above 80 and how much the clubs spent on these players' wage.
+
+```{r}
+# Transforming the Wage column
+high_rated_players <- outfield_player %>%
+  filter(Overall > 80) %>%
+  mutate(Wage = gsub("€", "", Wage),  # remove Euro symbol
+         Wage = gsub("M", "e6", Wage),  # replace M with e6 to convert to numeric later
+         Wage = gsub("K", "e3", Wage),  # replace K with e3 to convert to numeric later
+         Wage = as.numeric(gsub("e6", "", ifelse(grepl(
+           "e6", Wage), as.character(as.numeric(gsub(
+             "e6", "", Wage)) * 1e6), Wage))),  # for millions
+         Wage = as.numeric(gsub("e3", "", ifelse(grepl(
+           "e3", Wage), as.character(as.numeric(gsub(
+             "e3", "", Wage)) * 1e3), Wage)))) %>%
+  group_by(Club) %>%
+  summarize(Total_Wage = sum(Wage, na.rm = TRUE), Num_of_Players = n()) %>%
+  arrange(desc(Num_of_Players)) %>%
+  head(10)
+
+# Defining the colors for each club
+club_colors <- c(
+  "Atlético de Madrid" = "pink",
+  "Juventus" = "gray",
+  "Manchester City" = "lightblue",
+  "Paris Saint-Germain" = "darkblue",
+  "Chelsea" = "blue",
+  "FC Barcelona" = "maroon",
+  "Real Madrid CF" = "goldenrod",
+  "FC Bayern München" = "darkred",
+  "Inter" = "black",
+  "Manchester United" = "red"
+)
+
+# Plotting
+ggplot(high_rated_players, aes(x = reorder(Club, -Num_of_Players),
+                               y = Num_of_Players, fill = Club)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_text(aes(label = paste0(round(Total_Wage / 1e6, 1), "M")),
+            vjust = 0.2, hjust = -0.05) +
+  scale_fill_manual(values = club_colors) +
+  coord_flip() +
+  labs(title = "Top 10 Clubs with Players Having Overall Rating Above 80 and Spent on Wage",
+       x = "Club",
+       y = "Number of Players") +
+  theme_minimal()
+```
+
+The chart shows Atlético de Madrid has the highest number of players (19 players) over 
+overall rating 80, a fact which could be surprising to any FIFA 22 game player
+because one would think that clubs like Manchester City, Real Madrid CF, or
+FC Barcelona should be leading this chart. Although, Real Madrid CF has only 15
+players over the overall rating of 80, the club spent 3.1M on wage, which is the
+highest among the 10 clubs.
+
+# What leads to higher market value for a player in forward position?
+
+I am curious about what are the attributes the make a player highly valued than
+other players in the game. For this analysis, I will consider players in the
+forward position: "ST", "RW", "LW", and "CF". I am selecting only the forward 
+players because it will save computational time.
+
+Based on my experience with the game, I am assuming that the top attributes are
+finishing, reaction, dribbling, and positioning. There can be many more.
+```{r}
+
+# Filter the dataframe to contain only players with ST, RW, LW, CF positions
+selected_positions <- c("ST", "RW", "LW", "CF")
+filtered_player <- outfield_player %>% 
+  filter(Best.Position %in% selected_positions)
+
+# Convert the Value column to numeric
+filtered_player <- filtered_player %>%
+  mutate(Value_numeric = case_when(
+    str_detect(Value, "M") ~ as.numeric(str_extract(Value, "[0-9.]+")) * 1e6, # Convert M to million
+    str_detect(Value, "K") ~ as.numeric(str_extract(Value, "[0-9.]+")) * 1e3, # Convert K to thousand
+    TRUE ~ as.numeric(str_replace(Value, "€", "")) # Assume the rest are in numeric format and remove Euro symbol if present
+  ))
+
+# Remove columns that are not necessary for our analysis
+filtered_player <- filtered_player %>%
+  select(-c(1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 43, 45))
+
+```
+
+
+I am picking Random Forest model to capture the relationships. 
+```{r}
+rf_model <- randomForest(Value_numeric ~ ., data = filtered_player)
+importance_df <- as.data.frame(importance(rf_model))
+importance_df$variable <- rownames(importance_df)
+ggplot(importance_df, aes(x = reorder(variable, IncNodePurity), y = IncNodePurity)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Variable Importance", x = "Variables", y = "Importance (IncNodePurity)")
+
+```
+
+The graph shows that "Reactions" is by far the most important attribute that 
+influences market price of a player. This attribute is followed by 
+"BallControl", "Finishing", "Dribbling", "Positioning", "ShortPassing", and
+"Age". Having Short Passing attribute in top 5 is a surprise for me. 
+
+It seems like the market value of a creative forward player is higher 
+because these are the attributes of such player.
+
+Lastly, it makes sense to have Interceptions, Defensive awarness, 
+Sliding tackle, Jumping, and Aggression in the bottom as they are attributes
+of a defensive player and it doesn't make sense to value a attacking player 
+based on their defensive skill.
+
+# Insights and Observations
+
+## High Rated Players and Club Strategy:
+
+The findings about Atlético de Madrid having the highest number of players with overall ratings above 80 could mean that the club has a strategy of acquiring high-rated players, potentially to boost its competitive edge.
+
+## Wage Expenditure Analysis:
+
+Real Madrid's higher wage expenditure, despite having fewer high-rated players, could reflect a strategy of investing in “marquee” players, potentially to enhance the club's brand value and commercial revenue.
+
+## Market Value of Forwards:
+
+The insight that ‘Reactions’ is the most significant attribute influencing the market value of forwards is valuable. It may suggest that the ability to quickly respond to game situations is highly valued for offensive players, potentially more than goal-scoring attributes like Finishing.
+
+## Defensive Attributes and Market Value:
+
+The finding that defensive attributes like Interceptions and Sliding Tackle are less influential in determining market value implies a potential undervaluation of defensive players, which could be an opportunity for clubs to acquire quality defensive players at a lower cost.
